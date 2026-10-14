@@ -3,6 +3,7 @@ import base64
 import hashlib
 import io
 import json
+import re
 import urllib.error
 import urllib.request
 from PIL import Image, ImageOps
@@ -80,7 +81,11 @@ def extract_text(data):
         raise ValueError('No interpretation was returned. Check the selected model supports images.')
     return '\n\n'.join(texts)
 
-def interpret(prompt, figures, api_key, model):
+def interpret(prompt, figures, api_key, model, provider="OpenAI"):
+    if provider == "Google Gemini":
+        return interpret_gemini(prompt, figures, api_key, model)
+    if provider != "OpenAI":
+        raise ValueError("Unknown AI provider.")
     request = urllib.request.Request('https://api.openai.com/v1/responses',
         data=json.dumps(make_payload(prompt, figures, model)).encode(),
         headers={'Authorization': 'Bearer ' + api_key.strip(), 'Content-Type': 'application/json'},
@@ -97,3 +102,58 @@ def interpret(prompt, figures, api_key, model):
         raise ValueError(messages.get(exc.code, f'API request failed (HTTP {exc.code}). Try later.')) from None
     except (urllib.error.URLError, TimeoutError):
         raise ValueError('Could not reach OpenAI. Check your internet connection and try again.') from None
+
+
+def make_gemini_payload(prompt, figures):
+    parts = [{'text': prompt}]
+    for i, figure in enumerate(figures):
+        parts.extend([
+            {'text': f'Figure {i+1}: {figure["name"]}'},
+            {'inlineData': {'mimeType': 'image/png',
+                            'data': base64.b64encode(figure['png']).decode()}}
+        ])
+    return {'contents': [{'role': 'user', 'parts': parts}],
+            'generationConfig': {'maxOutputTokens': 8192}}
+
+
+def extract_gemini_text(data):
+    if data.get('promptFeedback', {}).get('blockReason'):
+        raise ValueError('Gemini blocked this request. Review the figures and context.')
+    candidates = data.get('candidates', [])
+    if not candidates:
+        raise ValueError('Gemini returned no interpretation. Try again with fewer figures.')
+    candidate = candidates[0]
+    if candidate.get('finishReason') != 'STOP':
+        raise ValueError('Gemini did not complete the report. Try fewer figures or another image-capable model.')
+    texts = [part['text'] for part in candidate.get('content', {}).get('parts', [])
+             if part.get('text') and not part.get('thought')]
+    if not texts:
+        raise ValueError('Gemini returned no report text. Check the model supports image input.')
+    return '\n\n'.join(texts)
+
+
+def interpret_gemini(prompt, figures, api_key, model):
+    model = model.strip()
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', model):
+        raise ValueError('Enter only the Gemini model name, for example gemini-2.5-flash.')
+    body = json.dumps(make_gemini_payload(prompt, figures)).encode()
+    if len(body) > 19 * 1024 * 1024:
+        raise ValueError('The Gemini request is too large. Upload fewer or smaller images (under 19 MB combined after encoding).')
+    request = urllib.request.Request(
+        f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
+        data=body, headers={'x-goog-api-key': api_key.strip(), 'Content-Type': 'application/json'},
+        method='POST')
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            return extract_gemini_text(json.load(response))
+    except urllib.error.HTTPError as exc:
+        messages = {
+            400: 'Gemini rejected the request. Check your API key and image-capable model name.',
+            401: 'Gemini API key was rejected. Check your key.',
+            403: 'Gemini access denied. Check key permissions and account/region eligibility.',
+            404: 'Gemini model not available. Enter an image-capable model available in Google AI Studio.',
+            413: 'Gemini request too large. Upload fewer or smaller images.',
+            429: 'Gemini quota or rate limit reached. Wait and retry, or check your free-tier allowance in Google AI Studio.'}
+        raise ValueError(messages.get(exc.code, f'Gemini request failed (HTTP {exc.code}). Try later.')) from None
+    except (urllib.error.URLError, TimeoutError):
+        raise ValueError('Could not reach Gemini. Check your internet connection and try again.') from None

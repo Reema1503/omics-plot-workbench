@@ -1,7 +1,6 @@
 """Run: python -m streamlit run app.py"""
 import io
 import json
-import os
 import zipfile
 import streamlit as st
 from analysis import prepare_image, make_prompt, fingerprint, interpret
@@ -20,12 +19,20 @@ with st.sidebar:
     st.caption('FROM FIGURES TO UNDERSTANDING')
     st.divider()
     mode = st.radio('Interpretation mode', ['ChatGPT prompt · no API key', 'Automatic AI interpretation'])
+    provider = 'OpenAI'
     key = ''
     model = 'gpt-4.1'
     if mode.startswith('Automatic'):
-        key = st.text_input('OpenAI API key', value=os.environ.get('OPENAI_API_KEY', ''), type='password')
-        model = st.text_input('Vision model', value=os.environ.get('OPENAI_MODEL', 'gpt-4.1'))
-        st.caption('API use is billed separately. The key is used for this session and is excluded from exports.')
+        provider = st.selectbox('AI provider', ['Google Gemini', 'OpenAI'])
+        if provider == 'Google Gemini':
+            key = st.text_input('Gemini API key', type='password', key='gemini_api_key')
+            model = st.text_input('Gemini vision model', value='gemini-2.5-flash', key='gemini_model')
+            st.markdown('[Get a Gemini key](https://aistudio.google.com/apikey)')
+            st.caption('Free-tier usage is available for eligible accounts, with limits. Billing-enabled projects may incur charges. Your key is excluded from exports.')
+        else:
+            key = st.text_input('OpenAI API key', type='password', key='openai_api_key')
+            model = st.text_input('OpenAI vision model', value='gpt-4.1', key='openai_model')
+            st.caption('API use is billed separately. Your key is excluded from exports.')
     st.divider()
     st.markdown('**Your workflow**\n\n1. Add study context\n2. Upload & label figures\n3. Interpret & review\n4. Download your report')
     if st.button('Clear workspace', width='stretch'):
@@ -34,6 +41,7 @@ with st.sidebar:
 
 st.markdown('<div class="eyebrow">BIOINFORMATICS / FIGURE INTERPRETATION</div>', unsafe_allow_html=True)
 st.title('Understand the patterns in your data')
+st.caption('Version 1.1 · Gemini + OpenAI')
 st.markdown('<p class="intro">Upload PCA plots and heatmaps. Add the context behind your experiment. Build a clear interpretation, Results paragraph, and figure captions.</p>', unsafe_allow_html=True)
 st.caption('Interprets existing figures. Calculating PCA, differential expression, and statistics requires the underlying data.')
 
@@ -100,11 +108,11 @@ with report_tab:
     if not figures:
         st.info('Upload at least one figure in the Figures tab to begin.')
     if mode.startswith('Automatic'):
-        st.caption('Clicking Interpret sends the uploaded figures and study details to OpenAI. No API request occurs just by uploading.')
+        st.caption(f'Clicking Interpret sends the uploaded figures and study details to {provider}. No API request occurs just by uploading.')
         if st.button('Interpret my figures', type='primary', disabled=not figures or not key.strip() or not model.strip()):
             try:
                 with st.spinner('Reading figures and preparing your report…'):
-                    result = interpret(prompt, figures, key, model.strip())
+                    result = interpret(prompt, figures, key, model.strip(), provider=provider)
                 st.session_state['report'] = result
                 st.session_state['report_source'] = current
                 st.session_state['report_editor'] = result
